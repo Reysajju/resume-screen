@@ -17,7 +17,7 @@ function App() {
         throw new Error('API key is not configured. Please set VITE_GEMINI_API_KEY in your environment variables.');
       }
 
-      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=' + apiKey, {
+      const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0:generateContent?key=' + apiKey, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
