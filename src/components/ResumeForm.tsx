@@ -1,254 +1,328 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { Upload, X, AlertCircle, FileText } from 'lucide-react';
+import { Upload, X, AlertCircle, FileText, CheckCircle2 } from 'lucide-react';
+import { FileWithProgress, ValidationError } from '../types';
+import { v4 as uuidv4 } from 'uuid';
 
 interface ResumeFormProps {
-  onSubmit: (resumeData: string, jobDescription: string) => Promise<void>;
+  onSubmit: (files: FileWithProgress[], jobDescription: string) => Promise<void>;
   isAnalyzing: boolean;
+  files: FileWithProgress[];
+  setFiles: React.Dispatch<React.SetStateAction<FileWithProgress[]>>;
 }
 
-interface FileWithProgress extends File {
-  progress?: number;
-}
-
-export const ResumeForm: React.FC<ResumeFormProps> = ({ onSubmit, isAnalyzing }) => {
+export const ResumeForm: React.FC<ResumeFormProps> = ({ 
+  onSubmit, 
+  isAnalyzing, 
+  files, 
+  setFiles 
+}) => {
   const [isDragging, setIsDragging] = useState(false);
-  const [file, setFile] = useState<FileWithProgress | null>(null);
-  const [error, setError] = useState<string>('');
+  const [validationErrors, setValidationErrors] = useState<ValidationError[]>([]);
   const [jobDescription, setJobDescription] = useState<string>('');
-  const [uploadStatus, setUploadStatus] = useState<string>('');
+  const [isValidating, setIsValidating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropZoneRef = useRef<HTMLDivElement>(null);
 
   const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
-  const ALLOWED_TYPES = ['application/pdf'];
+  const ALLOWED_TYPES = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  ];
 
-  const validateFile = (file: File): string | null => {
+  const validateFile = async (file: File): Promise<string | null> => {
     if (!ALLOWED_TYPES.includes(file.type)) {
-      return 'Invalid file type. Please upload a PDF file.';
+      return 'Invalid file type. Please upload PDF, DOC, or DOCX files only.';
     }
     if (file.size > MAX_FILE_SIZE) {
       return 'File size exceeds 5MB limit.';
     }
+    
+    // Simulate content validation
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    // Check if file is not empty
+    if (file.size === 0) {
+      return 'File appears to be empty.';
+    }
+
     return null;
   };
 
-  const handleFile = async (file: File) => {
-    setError('');
-    setUploadStatus('Validating file...');
+  const handleFiles = async (newFiles: FileList) => {
+    setValidationErrors([]);
+    setIsValidating(true);
+    
+    const fileArray = Array.from(newFiles);
+    const validFiles: FileWithProgress[] = [];
+    const errors: ValidationError[] = [];
 
-    const validationError = validateFile(file);
-    if (validationError) {
-      setError(validationError);
-      setFile(null);
-      setUploadStatus('');
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
+    for (const file of fileArray) {
+      const validationError = await validateFile(file);
+      
+      const fileWithProgress: FileWithProgress = {
+        ...file,
+        id: uuidv4(),
+        progress: 0,
+        status: 'uploading',
+        uploadTime: Date.now(),
+        validationStatus: 'pending'
+      };
+
+      if (validationError) {
+        errors.push({
+          message: `${file.name}: ${validationError}`,
+          type: 'error',
+          field: 'file'
+        });
+        fileWithProgress.validationStatus = 'invalid';
+        fileWithProgress.validationMessage = validationError;
+      } else {
+        fileWithProgress.validationStatus = 'valid';
+        validFiles.push(fileWithProgress);
       }
-      return;
     }
 
-    const fileWithProgress = new File([file], file.name, {
-      type: file.type,
-      lastModified: file.lastModified,
-    }) as FileWithProgress;
-    
-    fileWithProgress.progress = 0;
-    setFile(fileWithProgress);
-    setUploadStatus('Processing file...');
+    if (errors.length > 0) {
+      setValidationErrors(errors);
+    }
 
-    // Simulate upload progress
-    const interval = setInterval(() => {
-      setFile(prevFile => {
-        if (!prevFile) return null;
-        const progress = (prevFile.progress || 0) + 10;
-        if (progress >= 100) {
-          clearInterval(interval);
-          setUploadStatus('File ready');
-        }
-        const newFile = new File([prevFile], prevFile.name, {
-          type: prevFile.type,
-          lastModified: prevFile.lastModified,
-        }) as FileWithProgress;
-        newFile.progress = progress;
-        return newFile;
+    if (validFiles.length > 0) {
+      setFiles(prev => [...prev, ...validFiles]);
+      
+      // Simulate upload progress for each file
+      validFiles.forEach(file => {
+        let progress = 0;
+        const interval = setInterval(() => {
+          progress += 10;
+          if (progress <= 100) {
+            setFiles(prev =>
+              prev.map(f =>
+                f.id === file.id
+                  ? { ...f, progress }
+                  : f
+              )
+            );
+          }
+          if (progress >= 100) {
+            clearInterval(interval);
+            setFiles(prev =>
+              prev.map(f =>
+                f.id === file.id
+                  ? { ...f, status: 'complete' }
+                  : f
+              )
+            );
+          }
+        }, 200);
       });
-    }, 100);
+    }
+    
+    setIsValidating(false);
   };
 
   const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
+    handleFiles(e.dataTransfer.files);
+  }, []);
 
-    const droppedFile = e.dataTransfer.files[0];
-    if (droppedFile) {
-      handleFile(droppedFile);
+  const validateForm = (): ValidationError[] => {
+    const errors: ValidationError[] = [];
+
+    if (files.length === 0) {
+      errors.push({
+        message: 'Please upload at least one resume.',
+        type: 'error',
+        field: 'files'
+      });
     }
-  }, []);
 
-  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragging(true);
-  }, []);
+    if (!jobDescription.trim()) {
+      errors.push({
+        message: 'Please enter a job description.',
+        type: 'error',
+        field: 'jobDescription'
+      });
+    } else if (jobDescription.trim().length < 50) {
+      errors.push({
+        message: 'Job description seems too short. Please provide more details.',
+        type: 'warning',
+        field: 'jobDescription'
+      });
+    }
 
-  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setIsDragging(false);
-  }, []);
+    // Check if all files are properly uploaded
+    const incompleteFiles = files.filter(f => f.status !== 'complete');
+    if (incompleteFiles.length > 0) {
+      errors.push({
+        message: 'Please wait for all files to finish uploading.',
+        type: 'error',
+        field: 'files'
+      });
+    }
+
+    // Check for invalid files
+    const invalidFiles = files.filter(f => f.validationStatus === 'invalid');
+    if (invalidFiles.length > 0) {
+      errors.push({
+        message: 'Some files failed validation. Please remove them and try again.',
+        type: 'error',
+        field: 'files'
+      });
+    }
+
+    return errors;
+  };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     
-    if (!file || !(file instanceof File)) {
-      setError('Please upload a valid PDF file.');
-      return;
+    const errors = validateForm();
+    setValidationErrors(errors);
+
+    if (errors.length > 0) {
+      // Only block submission for error type validations
+      if (errors.some(e => e.type === 'error')) {
+        return;
+      }
     }
 
     try {
-      setUploadStatus('Processing submission...');
-      const fileData = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        
-        reader.onload = () => {
-          const result = reader.result;
-          if (typeof result === 'string') {
-            const base64Content = result.split(',')[1];
-            resolve(base64Content);
-          } else {
-            reject(new Error('Failed to read file content'));
-          }
-        };
-
-        reader.onerror = () => {
-          reject(new Error('Error reading file'));
-        };
-
-        reader.readAsDataURL(file);
-      });
-
-      await onSubmit(fileData, jobDescription);
+      await onSubmit(files, jobDescription);
     } catch (error) {
-      console.error('Error processing file:', error);
-      setError('Error processing file. Please try again.');
-      setUploadStatus('');
+      console.error('Error processing files:', error);
+      setValidationErrors([{
+        message: 'Error processing files. Please try again.',
+        type: 'error'
+      }]);
     }
   };
 
-  const removeFile = () => {
-    setFile(null);
-    setError('');
-    setUploadStatus('');
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
+  const removeFile = (fileId: string) => {
+    setFiles(prev => prev.filter(f => f.id !== fileId));
+    setValidationErrors([]);
   };
 
   const formatFileSize = (bytes: number): string => {
-    if (!Number.isFinite(bytes) || bytes < 0) return '0 B';
     if (bytes === 0) return '0 B';
-    if (bytes < 1024) return `${bytes} B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   };
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="space-y-2">
-        <label className="block text-sm font-medium text-gray-700" id="resume-upload-label">
-          Upload Resume (PDF only)
+        <label className="block text-sm font-medium text-gray-700">
+          Upload Resumes (PDF, DOC, or DOCX)
         </label>
         
-        {/* Drag and drop zone */}
         <div
           ref={dropZoneRef}
           onDrop={handleDrop}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragLeave={(e) => {
+            e.preventDefault();
+            setIsDragging(false);
+          }}
           onClick={() => fileInputRef.current?.click()}
           className={`
             relative border-2 border-dashed rounded-lg p-8 text-center transition-colors cursor-pointer
             ${isDragging ? 'border-indigo-500 bg-indigo-50' : 'border-gray-300 hover:border-indigo-500'}
+            ${isValidating ? 'opacity-50' : ''}
           `}
-          role="button"
-          tabIndex={0}
-          aria-labelledby="resume-upload-label"
-          onKeyPress={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              fileInputRef.current?.click();
-            }
-          }}
         >
           <input
             ref={fileInputRef}
             type="file"
-            accept=".pdf,application/pdf"
-            onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])}
+            accept=".pdf,.doc,.docx"
+            onChange={(e) => e.target.files && handleFiles(e.target.files)}
+            multiple
             className="hidden"
-            aria-hidden="true"
+            disabled={isValidating}
           />
           
-          <Upload className="mx-auto h-12 w-12 text-gray-400" aria-hidden="true" />
+          <Upload className="mx-auto h-12 w-12 text-gray-400" />
           <p className="mt-2 text-sm text-gray-600">
-            Drag and drop your PDF resume here or click to upload
+            {isValidating ? 'Validating files...' : 'Drag and drop your resumes here or click to upload'}
           </p>
           <p className="text-xs text-gray-500">
-            Maximum file size: 5MB
+            Maximum file size: 5MB per file
           </p>
         </div>
 
-        {/* Upload Status */}
-        {uploadStatus && (
-          <div className="flex items-center gap-2 text-indigo-600 text-sm mt-2">
-            <span>{uploadStatus}</span>
-          </div>
-        )}
-
-        {/* Error message */}
-        {error && (
-          <div className="flex items-center gap-2 text-red-600 text-sm mt-2" role="alert">
-            <AlertCircle className="w-4 h-4" />
-            <span>{error}</span>
-          </div>
-        )}
-
-        {/* File preview */}
-        {file && (
-          <div className="mt-4 bg-gray-50 rounded-lg p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <FileText className="w-5 h-5 text-gray-500" />
-                <div>
-                  <p className="text-sm font-medium text-gray-900">{file.name}</p>
-                  <p className="text-xs text-gray-500">{formatFileSize(file.size)}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={removeFile}
-                className="text-gray-400 hover:text-gray-500"
-                aria-label="Remove file"
+        {validationErrors.length > 0 && (
+          <div className="space-y-2">
+            {validationErrors.map((error, index) => (
+              <div 
+                key={index} 
+                className={`flex items-center gap-2 text-sm ${
+                  error.type === 'error' ? 'text-red-600' : 'text-yellow-600'
+                }`}
               >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Progress bar */}
-            {file.progress !== undefined && file.progress < 100 && (
-              <div className="mt-3">
-                <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-indigo-600 transition-all duration-300"
-                    style={{ width: `${file.progress}%` }}
-                    role="progressbar"
-                    aria-valuenow={file.progress}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                  />
-                </div>
-                <span className="text-xs text-gray-500 mt-1">
-                  {file.progress}% uploaded
-                </span>
+                <AlertCircle className="w-4 h-4" />
+                <span>{error.message}</span>
               </div>
-            )}
+            ))}
+          </div>
+        )}
+
+        {files.length > 0 && (
+          <div className="mt-4 space-y-4">
+            {files.map((file) => (
+              <div
+                key={file.id}
+                className={`bg-gray-50 rounded-lg p-4 ${
+                  file.validationStatus === 'invalid' ? 'border-red-300 border' : ''
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <FileText className="w-5 h-5 text-gray-500" />
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium text-gray-900">{file.name}</p>
+                        {file.validationStatus === 'valid' && (
+                          <CheckCircle2 className="w-4 h-4 text-green-500" />
+                        )}
+                      </div>
+                      <p className="text-xs text-gray-500">
+                        {formatFileSize(file.size)} • {new Date(file.uploadTime).toLocaleString()}
+                      </p>
+                      {file.validationMessage && (
+                        <p className="text-xs text-red-500 mt-1">{file.validationMessage}</p>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => removeFile(file.id)}
+                    className="text-gray-400 hover:text-gray-500"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {file.progress !== undefined && file.progress < 100 && (
+                  <div className="mt-3">
+                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-indigo-600 transition-all duration-300"
+                        style={{ width: `${file.progress}%` }}
+                      />
+                    </div>
+                    <span className="text-xs text-gray-500 mt-1">
+                      {file.progress}% uploaded
+                    </span>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         )}
       </div>
@@ -261,7 +335,11 @@ export const ResumeForm: React.FC<ResumeFormProps> = ({ onSubmit, isAnalyzing })
           id="jobDescription"
           value={jobDescription}
           onChange={(e) => setJobDescription(e.target.value)}
-          className="w-full h-32 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+          className={`w-full h-32 px-3 py-2 border rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 ${
+            validationErrors.some(e => e.field === 'jobDescription')
+              ? 'border-red-300'
+              : 'border-gray-300'
+          }`}
           placeholder="Paste the job description here..."
           required
         />
@@ -269,17 +347,18 @@ export const ResumeForm: React.FC<ResumeFormProps> = ({ onSubmit, isAnalyzing })
 
       <button
         type="submit"
-        disabled={isAnalyzing || !file}
+        disabled={isAnalyzing || isValidating || files.length === 0}
         className="w-full bg-indigo-600 text-white py-3 px-6 rounded-lg font-medium hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-        aria-busy={isAnalyzing}
       >
         {isAnalyzing ? (
           <div className="flex items-center justify-center">
             <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2" />
-            Analyzing...
+            Analyzing Resumes...
           </div>
+        ) : isValidating ? (
+          'Validating Files...'
         ) : (
-          'Analyze Resume'
+          'Analyze Resumes'
         )}
       </button>
     </form>
